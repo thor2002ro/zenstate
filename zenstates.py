@@ -390,6 +390,60 @@ else:
     SMU_CMD_OC_FREQ_UNLOCK = 0x5F
     isOcFreqSupported = True
 
+# NEW: Function to get current state (frequency and voltage) for all cores
+def getCurrentStateAllCores():
+    """Get current frequency and voltage for all cores"""
+    results = []
+    try:
+        core_count = len(glob.glob('/dev/cpu/[0-9]*/msr'))
+        for core in range(core_count):
+            # Read current P-state MSR
+            val = readmsr(0xC0010293, core)
+            
+            # Extract FID, DID, VID
+            fid = val & 0xff
+            did = (val >> 8) & 0x3f
+            vid = (val >> 14) & 0xff
+            
+            # Calculate frequency and voltage
+            frequency = (25 * fid) / (12.5 * did) * 100  # in MHz
+            voltage = 1.55 - vid * 0.00625
+            
+            # Check if P-state is enabled (bit 63)
+            status = val & (1 << 63)
+            
+            results.append({
+                'core': core,
+                'fid': fid,
+                'did': did,
+                'vid': vid,
+                'frequency': frequency,
+                'voltage': voltage,
+                'status': status
+            })
+        return results
+    except Exception as e:
+        print("Error reading current state: %s" % str(e))
+        return []
+
+# NEW: Function to get current voltage for all cores
+def getCurrentVoltageAllCores():
+    """Get current VID and voltage for all cores"""
+    voltages = []
+    vids = []
+    try:
+        core_count = len(glob.glob('/dev/cpu/[0-9]*/msr'))
+        for core in range(core_count):
+            val = readmsr(0xC0010293, core)
+            vid = (val >> 14) & 0xff
+            voltage = 1.55 - vid * 0.00625
+            vids.append(vid)
+            voltages.append(voltage)
+        return vids, voltages
+    except Exception as e:
+        print("Error reading voltages: %s" % str(e))
+        return [], []
+
 parser = argparse.ArgumentParser(description='Dynamically edit AMD Ryzen processor parameters')
 parser.add_argument('-l', '--list', action='store_true', help='List all P-States')
 parser.add_argument('--use-gui', action='store_true', help='Run in GUI')
@@ -411,6 +465,8 @@ parser.add_argument('--revert-voltage', action='store_true', help='Revert OC vol
 parser.add_argument('--ppt', default=-1, type=int, help='Set PPT limit (in W)')
 parser.add_argument('--tdc', default=-1, type=int, help='Set TDC limit (in A)')
 parser.add_argument('--edc', default=-1, type=int, help='Set EDC limit (in A)')
+parser.add_argument('--voltage', action='store_true', help='Show current voltage for all cores')
+parser.add_argument('--current-state', action='store_true', help='Show current frequency and voltage for all cores')
 
 args = parser.parse_args()
 
@@ -508,10 +564,53 @@ if args.unlock_frequency:
     setFreqLock(False)
     print('Frequency unlock requested.')
 
+if args.voltage:
+    vids, voltages = getCurrentVoltageAllCores()
+    if vids and voltages:
+        print("Core Voltage Report:")
+        print("-" * 40)
+        for i, (vid, voltage) in enumerate(zip(vids, voltages)):
+            print("Core %2d: VID = 0x%02X = %.4f V" % (i, vid, voltage))
+        print("-" * 40)
+        avg_voltage = sum(voltages) / len(voltages)
+        min_voltage = min(voltages)
+        max_voltage = max(voltages)
+        min_core = voltages.index(min_voltage)
+        max_core = voltages.index(max_voltage)
+        print("Average: %.4f V" % avg_voltage)
+        print("Min:     %.4f V (Core %d)" % (min_voltage, min_core))
+        print("Max:     %.4f V (Core %d)" % (max_voltage, max_core))
+
+if args.current_state:
+    results = getCurrentStateAllCores()
+    if results:
+        print("Current Core State Report:")
+        print("-" * 80)
+        print("Core | FID | DID | VID | Frequency | Voltage  | Status")
+        print("-" * 80)
+        for r in results:
+            print(" %3d | 0x%02X | 0x%02X | 0x%02X | %8.2f MHz | %.5f V | %s" % 
+                  (r['core'], r['fid'], r['did'], r['vid'], r['frequency'], r['voltage'], r['status']))
+        print("-" * 80)
+        
+        # Calculate averages
+        if results:
+            avg_freq = sum(r['frequency'] for r in results) / len(results)
+            avg_voltage = sum(r['voltage'] for r in results) / len(results)
+            min_voltage = min(r['voltage'] for r in results)
+            max_voltage = max(r['voltage'] for r in results)
+            min_freq = min(r['frequency'] for r in results)
+            max_freq = max(r['frequency'] for r in results)
+            
+            print("Average Frequency: %.2f MHz" % avg_freq)
+            print("Average Voltage:   %.5f V" % avg_voltage)
+            print("Frequency Range:   %.2f - %.2f MHz" % (min_freq, max_freq))
+            print("Voltage Range:     %.5f - %.5f V" % (min_voltage, max_voltage))
+
 if (not args.list and args.pstate == -1 and not args.c6_enable and not args.c6_disable
     and not args.smu_test_message and args.oc_frequency == 550 and args.oc_vid == -1 and not args.revert_voltage and not args.revert_frequency
     and not args.lock_frequency and not args.unlock_frequency and not args.use_gui and args.edc == -1 and args.ppt == -1
-    and args.tdc == -1):
+    and args.tdc == -1 and not args.voltage and not args.current_state):
     parser.print_help()
 
 
